@@ -1,0 +1,103 @@
+# Elastic Package Registry. The image crosses the one-way link unchanged (a registry
+# mirror, see docs/04-transfer.md) and lands in your internal registry. One image per
+# stack version: to update rules and integrations, put the new tag in the registry and
+# change the digest below in a merge request. Rollback is a git revert.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: epr
+  namespace: elastic-mirror
+  labels:
+    app.kubernetes.io/name: epr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: epr
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: epr
+        spec:
+      imagePullSecrets:
+        - name: registry-pull
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: epr
+          image: registry.example.internal/elastic/package-registry/distribution:lite-9.5.2@sha256:<digest>
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: EPR_ADDRESS
+              value: 0.0.0.0:8080
+            - name: EPR_TLS_CERT
+              value: /tls/tls.crt
+            - name: EPR_TLS_KEY
+              value: /tls/tls.key
+            - name: EPR_TLS_MIN_VERSION
+              value: "1.2"
+          ports:
+            - name: https
+              containerPort: 8080
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /
+              port: https
+              scheme: HTTPS
+            periodSeconds: 10
+          # The registry indexes every package before it listens (about 7 minutes
+          # for the lite image). Liveness and readiness start after this passes.
+          startupProbe:
+            httpGet:
+              path: /
+              port: https
+              scheme: HTTPS
+            periodSeconds: 10
+            failureThreshold: 90
+          livenessProbe:
+            httpGet:
+              path: /
+              port: https
+              scheme: HTTPS
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: tls
+          secret:
+            secretName: elastic-mirror-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: epr
+  namespace: elastic-mirror
+  labels:
+    app.kubernetes.io/name: epr
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: epr
+  ports:
+    - name: https
+      port: 8080
+      targetPort: https
